@@ -11,6 +11,8 @@
 #include <unistd.h>
 #include <stdio.h>
 
+#include <cassert>
+
 // The following code related to DRM/GBM was adapted from the following sources:
 // https://github.com/eyelash/tutorials/blob/master/drm-gbm.c
 // and
@@ -19,8 +21,10 @@
 // I am not the original author of this code, I have only modified it.
 // pucgenie: Me too.
 
-typedef int MyGLDevice;
-static MyGLDevice device;
+// File descriptor index type
+typedef int fdI_t;
+static fdI_t device;
+
 static drmModeModeInfo mode;
 static struct gbm_device *gbmDevice;
 static struct gbm_surface *gbmSurface;
@@ -33,29 +37,29 @@ static const char *eglGetErrorStr(); // moved to bottom
  @return != 0 means error.
  Error 1: Couldn't get any DRM_MODE_CONNECTED connection.
 **/
-static int getConnector(drmModeRes *resources, drmModeConnector &*ret) {
+static int getConnector(drmModeRes *resources, drmModeConnector* &ret) {
     assert(resources->count_connectors > 0);
     for (int i = resources->count_connectors; i --> 0;) {
         drmModeConnector *connector = drmModeGetConnector(device, resources->connectors[i]);
         if (connector->connection == DRM_MODE_CONNECTED) {
             ret = connector;
-            return 0;
+return 0;
         }
         drmModeFreeConnector(connector);
     }
-    return 1;
+return 1;
 }
 
 /**
  @return != 0 means error.
  Error 1: No valid encoder_id found in connector.
 **/
-static int findEncoder(drmModeConnector *connector, drmModeEncoder &*ret) {
+static int findEncoder(drmModeConnector *connector, drmModeEncoder* &ret) {
     if (connector->encoder_id) {
         ret = drmModeGetEncoder(device, connector->encoder_id);
-        return 0;
+return 0;
     }
-    return 1;
+return 1;
 }
 
 /**
@@ -70,17 +74,17 @@ static int matchConfigToVisual(EGLDisplay display, EGLint visualId, EGLConfig *c
         }
         if (id == visualId) {
             ret = i;
-            return 0;
+return 0;
         }
     }
-    return 1;
+return 1;
 }
 
 static struct gbm_bo *previousBo = NULL;
 static uint32_t previousFb;
 
-static void gbmSwapBuffers(EGLDisplay *display, EGLSurface *surface) {
-    eglSwapBuffers(*display, *surface);
+static void gbmSwapBuffers(EGLDisplay display, EGLSurface surface) {
+    eglSwapBuffers(display, surface);
     struct gbm_bo *bo = gbm_surface_lock_front_buffer(gbmSurface);
     uint32_t handle = gbm_bo_get_handle(bo).u32;
     uint32_t pitch = gbm_bo_get_stride(bo);
@@ -142,7 +146,7 @@ static const char *fragmentShaderCode =
     STRINGIFY(uniform vec4 color; void main() { gl_FragColor = vec4(color); });
 
 int main() {
-    static const char[][] TRY_CARDS = {
+    const char* TRY_CARDS[] = {
         "/dev/dri/card1",
         "/dev/dri/card0",
     };
@@ -150,7 +154,7 @@ int main() {
     // we have to try card0 and card1 to see which is valid. fopen will work on both, so...
     device = open(TRY_CARDS[0], O_RDWR | O_CLOEXEC);
     
-    static drmModeRes *resources;
+    drmModeRes *resources;
     if ((resources = drmModeGetResources(device)) == NULL) {
         // if we have the right device we can get it's resources
         printf("/dev/dri/card1 does not have DRM resources, using card0, ");
@@ -163,14 +167,14 @@ int main() {
     if (resources == NULL) {
         // pucgenie: Why card1 hardcoded in text?
         printf("Unable to get DRM resources on card1\n");
-        return -1;
+return -1;
     }
 
     drmModeConnector *connector;
     if (getConnector(resources, connector) != 0) {
         fprintf(stderr, "Unable to get connector\n");
         drmModeFreeResources(resources);
-        return -1;
+return -1;
     }
 
     connectorId = connector->connector_id;
@@ -183,7 +187,7 @@ int main() {
         fprintf(stderr, "Unable to get encoder\n");
         drmModeFreeConnector(connector);
         drmModeFreeResources(resources);
-        return -1;
+return -1;
     }
 
     crtc = drmModeGetCrtc(device, encoder->crtc_id);
@@ -196,14 +200,14 @@ int main() {
     static EGLDisplay display = eglGetDisplay(gbmDevice);
 
     {
-        static int major, minor;
+        int major, minor;
 
         if (eglInitialize(display, &major, &minor) == EGL_FALSE) {
             fprintf(stderr, "Failed to get EGL version! Error: %s\n",
                     eglGetErrorStr());
             eglTerminate(display);
             gbmClean();
-            return EXIT_FAILURE;
+return EXIT_FAILURE;
         }
 
         // Make sure that we can use OpenGL in this EGL app.
@@ -212,7 +216,7 @@ int main() {
         printf("Initialized EGL version: %d.%d\n", major, minor);
     }
 
-    static GLint posLoc, colorLoc, result;
+    GLint posLoc, colorLoc, result;
     //EGLConfig *configs = malloc(count * sizeof(EGLConfig));
     static EGLContext context;
     static EGLSurface surface;
@@ -228,7 +232,7 @@ int main() {
                         eglGetErrorStr());
                 eglTerminate(display);
                 gbmClean();
-                return EXIT_FAILURE;
+return EXIT_FAILURE;
             }
 
             // I am not exactly sure why the EGL config must match the GBM format.
@@ -240,7 +244,7 @@ int main() {
                 eglTerminate(display);
                 gbm_surface_destroy(gbmSurface);
                 gbm_device_destroy(gbmDevice);
-                return EXIT_FAILURE;
+return EXIT_FAILURE;
             }
 
             context = eglCreateContext(display, configs[configIndex], EGL_NO_CONTEXT, contextAttribs);
@@ -249,7 +253,7 @@ int main() {
                         eglGetErrorStr());
                 eglTerminate(display);
                 gbmClean();
-                return EXIT_FAILURE;
+return EXIT_FAILURE;
             }
 
             surface = eglCreateWindowSurface(display, configs[configIndex], gbmSurface, NULL);
@@ -259,7 +263,7 @@ int main() {
                 eglDestroyContext(display, context);
                 eglTerminate(display);
                 gbmClean();
-                return EXIT_FAILURE;
+return EXIT_FAILURE;
             }
         }
         eglMakeCurrent(display, surface, surface, context);
@@ -267,22 +271,23 @@ int main() {
     }
     // Set GL Viewport size, always needed!
     glViewport(0, 0, mode.hdisplay, mode.vdisplay);
+    {
+        // Get GL Viewport size and test if it is correct.
+        GLint viewport[4];
+        glGetIntegerv(GL_VIEWPORT, viewport);
 
-    // Get GL Viewport size and test if it is correct.
-    static GLint viewport[4];
-    glGetIntegerv(GL_VIEWPORT, viewport);
+        // viewport[2] and viewport[3] are viewport width and height respectively
+        printf("GL Viewport size: %dx%d\n", viewport[2], viewport[3]);
 
-    // viewport[2] and viewport[3] are viewport width and height respectively
-    printf("GL Viewport size: %dx%d\n", viewport[2], viewport[3]);
-
-    if (viewport[2] != mode.hdisplay || viewport[3] != mode.vdisplay) {
-        fprintf(stderr, "Error! The glViewport returned incorrect values! Something is wrong!\n");
-        eglDestroyContext(display, context);
-        eglDestroySurface(display, surface);
-        eglTerminate(display);
-        gbmClean();
-        assert(false);
-        return EXIT_FAILURE;
+        if (viewport[2] != mode.hdisplay || viewport[3] != mode.vdisplay) {
+            fprintf(stderr, "Error! The glViewport returned incorrect values! Something is wrong!\n");
+            eglDestroyContext(display, context);
+            eglDestroySurface(display, surface);
+            eglTerminate(display);
+            gbmClean();
+            assert(false);
+return EXIT_FAILURE;
+        }
     }
 
     // pucgenie: Let's try some experiments ;)
@@ -318,8 +323,8 @@ int main() {
     // Again, NO ERRRO CHECKING IS DONE! (for the purpose of this example)
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    // pucgenie: Why sizeof(float) instead of sizeof(GLfloat) (or just "sizeof(vertices)" without multiplication) ?
-    glBufferData(GL_ARRAY_BUFFER, 9 * sizeof(float), vertices, GL_STATIC_DRAW);
+
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices) * sizeof(GLfloat), vertices, GL_STATIC_DRAW);
 
     // Get vertex attribute and uniform locations
     posLoc = glGetAttribLocation(program, "pos");
@@ -332,14 +337,14 @@ int main() {
     // Set our vertex data
     glEnableVertexAttribArray(posLoc);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glVertexAttribPointer(posLoc, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float),
+    glVertexAttribPointer(posLoc, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(GLfloat),
                           (void *)0);
 
     // Render a triangle consisting of 3 vertices to the back buffer
     glDrawArrays(GL_TRIANGLES, 0, 3);
 
     // in order to display what you drew you need to swap the back and front buffers.
-    gbmSwapBuffers(&display, &surface);
+    gbmSwapBuffers(display, surface);
 
     sleep(5); // pause for a moment so that you can see it worked before returning to command line
    
@@ -350,60 +355,58 @@ int main() {
     gbmClean();
 
     close(device);
-    return EXIT_SUCCESS;
+return EXIT_SUCCESS;
 }
 
 
 // Get the EGL error back as a string. Useful for debugging.
-static const char *eglGetErrorStr()
-{
-    switch (eglGetError())
-    {
+static const char *eglGetErrorStr() {
+    switch (eglGetError()) {
     case EGL_SUCCESS:
-        return "The last function succeeded without error.";
+return "The last function succeeded without error.";
     case EGL_NOT_INITIALIZED:
-        return "EGL is not initialized, or could not be initialized, for the "
+return "EGL is not initialized, or could not be initialized, for the "
                "specified EGL display connection.";
     case EGL_BAD_ACCESS:
-        return "EGL cannot access a requested resource (for example a context "
+return "EGL cannot access a requested resource (for example a context "
                "is bound in another thread).";
     case EGL_BAD_ALLOC:
-        return "EGL failed to allocate resources for the requested operation.";
+return "EGL failed to allocate resources for the requested operation.";
     case EGL_BAD_ATTRIBUTE:
-        return "An unrecognized attribute or attribute value was passed in the "
+return "An unrecognized attribute or attribute value was passed in the "
                "attribute list.";
     case EGL_BAD_CONTEXT:
-        return "An EGLContext argument does not name a valid EGL rendering "
+return "An EGLContext argument does not name a valid EGL rendering "
                "context.";
     case EGL_BAD_CONFIG:
-        return "An EGLConfig argument does not name a valid EGL frame buffer "
+return "An EGLConfig argument does not name a valid EGL frame buffer "
                "configuration.";
     case EGL_BAD_CURRENT_SURFACE:
-        return "The current surface of the calling thread is a window, pixel "
+return "The current surface of the calling thread is a window, pixel "
                "buffer or pixmap that is no longer valid.";
     case EGL_BAD_DISPLAY:
-        return "An EGLDisplay argument does not name a valid EGL display "
+return "An EGLDisplay argument does not name a valid EGL display "
                "connection.";
     case EGL_BAD_SURFACE:
-        return "An EGLSurface argument does not name a valid surface (window, "
+return "An EGLSurface argument does not name a valid surface (window, "
                "pixel buffer or pixmap) configured for GL rendering.";
     case EGL_BAD_MATCH:
-        return "Arguments are inconsistent (for example, a valid context "
+return "Arguments are inconsistent (for example, a valid context "
                "requires buffers not supplied by a valid surface).";
     case EGL_BAD_PARAMETER:
-        return "One or more argument values are invalid.";
+return "One or more argument values are invalid.";
     case EGL_BAD_NATIVE_PIXMAP:
-        return "A NativePixmapType argument does not refer to a valid native "
+return "A NativePixmapType argument does not refer to a valid native "
                "pixmap.";
     case EGL_BAD_NATIVE_WINDOW:
-        return "A NativeWindowType argument does not refer to a valid native "
+return "A NativeWindowType argument does not refer to a valid native "
                "window.";
     case EGL_CONTEXT_LOST:
-        return "A power management event has occurred. The application must "
+return "A power management event has occurred. The application must "
                "destroy all contexts and reinitialise OpenGL ES state and "
                "objects to continue rendering.";
     default:
         break;
     }
-    return "Unknown error!";
+return "Unknown error!";
 }
