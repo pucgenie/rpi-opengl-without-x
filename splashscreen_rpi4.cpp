@@ -17,57 +17,69 @@
 // https://www.raspberrypi.org/forums/viewtopic.php?t=243707#p1499181
 //
 // I am not the original author of this code, I have only modified it.
+// pucgenie: Me too.
 
-int device;
-drmModeModeInfo mode;
-struct gbm_device *gbmDevice;
-struct gbm_surface *gbmSurface;
-drmModeCrtc *crtc;
-uint32_t connectorId;
+typedef int MyGLDevice;
+static MyGLDevice device;
+static drmModeModeInfo mode;
+static struct gbm_device *gbmDevice;
+static struct gbm_surface *gbmSurface;
+static drmModeCrtc *crtc;
+static uint32_t connectorId;
+
 static const char *eglGetErrorStr(); // moved to bottom
 
-static drmModeConnector *getConnector(drmModeRes *resources)
-{
-    for (int i = 0; i < resources->count_connectors; i++)
-    {
+/**
+ @return != 0 means error.
+ Error 1: Couldn't get any DRM_MODE_CONNECTED connection.
+**/
+static int getConnector(drmModeRes *resources, drmModeConnector &*ret) {
+    assert(resources->count_connectors > 0);
+    for (int i = resources->count_connectors; i --> 0;) {
         drmModeConnector *connector = drmModeGetConnector(device, resources->connectors[i]);
-        if (connector->connection == DRM_MODE_CONNECTED)
-        {
-            return connector;
+        if (connector->connection == DRM_MODE_CONNECTED) {
+            ret = connector;
+            return 0;
         }
         drmModeFreeConnector(connector);
     }
-
-    return NULL;
+    return 1;
 }
 
-static drmModeEncoder *findEncoder(drmModeConnector *connector)
-{
-if (connector->encoder_id)
-    {
-        return drmModeGetEncoder(device, connector->encoder_id);
+/**
+ @return != 0 means error.
+ Error 1: No valid encoder_id found in connector.
+**/
+static int findEncoder(drmModeConnector *connector, drmModeEncoder &*ret) {
+    if (connector->encoder_id) {
+        ret = drmModeGetEncoder(device, connector->encoder_id);
+        return 0;
     }
-    return NULL;
+    return 1;
 }
 
-static int matchConfigToVisual(EGLDisplay display, EGLint visualId, EGLConfig *configs, int count)
-{
-EGLint id;
-    for (int i = 0; i < count; ++i)
-    {
-        if (!eglGetConfigAttrib(display, configs[i], EGL_NATIVE_VISUAL_ID, &id))
-            continue;
-        if (id == visualId)
-            return i;
+/**
+ @return != 0 means error.
+ Error 1: Couldn't get EGL_NATIVE_VISUAL_ID attribute for any config.
+**/
+static int matchConfigToVisual(EGLDisplay display, EGLint visualId, EGLConfig *configs, int count, int &ret) {
+    EGLint id;
+    for (int i = 0; i < count; ++i) {
+        if (!eglGetConfigAttrib(display, configs[i], EGL_NATIVE_VISUAL_ID, &id)) {
+    continue;
+        }
+        if (id == visualId) {
+            ret = i;
+            return 0;
+        }
     }
-return -1;
+    return 1;
 }
 
 static struct gbm_bo *previousBo = NULL;
 static uint32_t previousFb;
 
-static void gbmSwapBuffers(EGLDisplay *display, EGLSurface *surface)
-{
+static void gbmSwapBuffers(EGLDisplay *display, EGLSurface *surface) {
     eglSwapBuffers(*display, *surface);
     struct gbm_bo *bo = gbm_surface_lock_front_buffer(gbmSurface);
     uint32_t handle = gbm_bo_get_handle(bo).u32;
@@ -76,8 +88,7 @@ static void gbmSwapBuffers(EGLDisplay *display, EGLSurface *surface)
     drmModeAddFB(device, mode.hdisplay, mode.vdisplay, 24, 32, pitch, handle, &fb);
     drmModeSetCrtc(device, crtc->crtc_id, fb, 0, 0, &connectorId, 1, &mode);
 
-    if (previousBo)
-    {
+    if (previousBo) {
         drmModeRmFB(device, previousFb);
         gbm_surface_release_buffer(gbmSurface, previousBo);
     }
@@ -85,14 +96,12 @@ static void gbmSwapBuffers(EGLDisplay *display, EGLSurface *surface)
     previousFb = fb;
 }
 
-static void gbmClean()
-{
+static void gbmClean() {
     // set the previous crtc
     drmModeSetCrtc(device, crtc->crtc_id, crtc->buffer_id, crtc->x, crtc->y, &connectorId, 1, &crtc->mode);
     drmModeFreeCrtc(crtc);
 
-    if (previousBo)
-    {
+    if (previousBo) {
         drmModeRmFB(device, previousFb);
         gbm_surface_release_buffer(gbmSurface, previousBo);
     }
@@ -119,15 +128,9 @@ static const EGLint contextAttribs[] = {
 // The following array holds vec3 data of
 // three vertex positions
 static const GLfloat vertices[] = {
-    -1.0f,
-    -1.0f,
-    0.0f,
-    1.0f,
-    -1.0f,
-    0.0f,
-    0.0f,
-    1.0f,
-    0.0f,
+    -1.0f, -1.0f, +0.0f,
+    +1.0f, -1.0f, +0.0f,
+    +0.0f, +1.0f, +0.0f,
 };
 
 // The following are GLSL shaders for rendering a triangle on the screen
@@ -138,42 +141,45 @@ static const char *vertexShaderCode = STRINGIFY(
 static const char *fragmentShaderCode =
     STRINGIFY(uniform vec4 color; void main() { gl_FragColor = vec4(color); });
 
-int main()
-{
-    EGLDisplay display;
-    drmModeRes *resources;
+int main() {
+    static const char[][] TRY_CARDS = {
+        "/dev/dri/card1",
+        "/dev/dri/card0",
+    };
     
     // we have to try card0 and card1 to see which is valid. fopen will work on both, so...
-    device = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+    device = open(TRY_CARDS[0], O_RDWR | O_CLOEXEC);
     
-    if ((resources = drmModeGetResources(device)) == NULL) // if we have the right device we can get it's resources
-        {
-        printf("/dev/dri/card0 does not have DRM resources, using card1, ");
-        device = open("/dev/dri/card1", O_RDWR | O_CLOEXEC); // if not, try the other one: (1)
+    static drmModeRes *resources;
+    if ((resources = drmModeGetResources(device)) == NULL) {
+        // if we have the right device we can get it's resources
+        printf("/dev/dri/card1 does not have DRM resources, using card0, ");
+        device = open(TRY_CARDS[1], O_RDWR | O_CLOEXEC); // if not, try the other one: (1)
         resources = drmModeGetResources(device);
-        }
-    else
-      printf("using /dev/dri/card0, ");
+    } else {
+      printf("using /dev/dri/card1, ");
+    }
 
-    if (resources == NULL)
-      { printf("Unable to get DRM resources on card1\n"); return -1;  }
+    if (resources == NULL) {
+        // pucgenie: Why card1 hardcoded in text?
+        printf("Unable to get DRM resources on card1\n");
+        return -1;
+    }
 
-
-    drmModeConnector *connector = getConnector(resources);
-    if (connector == NULL)
-    {
+    drmModeConnector *connector;
+    if (getConnector(resources, connector) != 0) {
         fprintf(stderr, "Unable to get connector\n");
         drmModeFreeResources(resources);
         return -1;
     }
 
     connectorId = connector->connector_id;
-    mode = connector->modes[0]; // array of resolutions and refresh rates supported by this display
+    // copy: array of resolutions and refresh rates supported by this display
+    mode = connector->modes[0];
     printf("resolution: %ix%i\n", mode.hdisplay, mode.vdisplay);
 
-    drmModeEncoder *encoder = findEncoder(connector);
-    if (encoder == NULL)
-    {
+    drmModeEncoder *encoder;
+    if (findEncoder(connector, encoder) != 0) {
         fprintf(stderr, "Unable to get encoder\n");
         drmModeFreeConnector(connector);
         drmModeFreeResources(resources);
@@ -184,132 +190,135 @@ int main()
     drmModeFreeEncoder(encoder);
     drmModeFreeConnector(connector);
     drmModeFreeResources(resources);
+    
     gbmDevice = gbm_create_device(device);
     gbmSurface = gbm_surface_create(gbmDevice, mode.hdisplay, mode.vdisplay, GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
-    display = eglGetDisplay(gbmDevice);
+    static EGLDisplay display = eglGetDisplay(gbmDevice);
 
-    
-
-    // We will use the screen resolution as the desired width and height for the viewport.
-    int desiredWidth = mode.hdisplay;
-    int desiredHeight = mode.vdisplay;
-
-    // Other variables we will need further down the code.
-    int major, minor;
-    GLuint program, vert, frag, vbo;
-    GLint posLoc, colorLoc, result;
-
-    if (eglInitialize(display, &major, &minor) == EGL_FALSE)
     {
-        fprintf(stderr, "Failed to get EGL version! Error: %s\n",
-                eglGetErrorStr());
-        eglTerminate(display);
-        gbmClean();
-        return EXIT_FAILURE;
+        static int major, minor;
+
+        if (eglInitialize(display, &major, &minor) == EGL_FALSE) {
+            fprintf(stderr, "Failed to get EGL version! Error: %s\n",
+                    eglGetErrorStr());
+            eglTerminate(display);
+            gbmClean();
+            return EXIT_FAILURE;
+        }
+
+        // Make sure that we can use OpenGL in this EGL app.
+        eglBindAPI(EGL_OPENGL_API);
+
+        printf("Initialized EGL version: %d.%d\n", major, minor);
     }
 
-    // Make sure that we can use OpenGL in this EGL app.
-    eglBindAPI(EGL_OPENGL_API);
+    static GLint posLoc, colorLoc, result;
+    //EGLConfig *configs = malloc(count * sizeof(EGLConfig));
+    static EGLContext context;
+    static EGLSurface surface;
+    {    // We will use the screen resolution as the desired width and height for the viewport.
+        EGLint count;
+        eglGetConfigs(display, NULL, 0, &count);
+        {
+            EGLConfig configs[count];
 
-    printf("Initialized EGL version: %d.%d\n", major, minor);
+            EGLint numConfigs;
+            if (!eglChooseConfig(display, configAttribs, configs, count, &numConfigs)) {
+                fprintf(stderr, "Failed to get EGL configs! Error: %s\n",
+                        eglGetErrorStr());
+                eglTerminate(display);
+                gbmClean();
+                return EXIT_FAILURE;
+            }
 
-    EGLint count;
-    EGLint numConfigs;
-    eglGetConfigs(display, NULL, 0, &count);
-    EGLConfig *configs = malloc(count * sizeof(configs));
+            // I am not exactly sure why the EGL config must match the GBM format.
+            // But it works!
+            int configIndex;
+            if (matchConfigToVisual(display, GBM_FORMAT_XRGB8888, configs, numConfigs, configIndex) != 0) {
+                fprintf(stderr, "Failed to find matching EGL config! Error: %s\n",
+                        eglGetErrorStr());
+                eglTerminate(display);
+                gbm_surface_destroy(gbmSurface);
+                gbm_device_destroy(gbmDevice);
+                return EXIT_FAILURE;
+            }
 
-    if (!eglChooseConfig(display, configAttribs, configs, count, &numConfigs))
-    {
-        fprintf(stderr, "Failed to get EGL configs! Error: %s\n",
-                eglGetErrorStr());
-        eglTerminate(display);
-        gbmClean();
-        return EXIT_FAILURE;
+            context = eglCreateContext(display, configs[configIndex], EGL_NO_CONTEXT, contextAttribs);
+            if (context == EGL_NO_CONTEXT) {
+                fprintf(stderr, "Failed to create EGL context! Error: %s\n",
+                        eglGetErrorStr());
+                eglTerminate(display);
+                gbmClean();
+                return EXIT_FAILURE;
+            }
+
+            surface = eglCreateWindowSurface(display, configs[configIndex], gbmSurface, NULL);
+            if (surface == EGL_NO_SURFACE) {
+                fprintf(stderr, "Failed to create EGL surface! Error: %s\n",
+                        eglGetErrorStr());
+                eglDestroyContext(display, context);
+                eglTerminate(display);
+                gbmClean();
+                return EXIT_FAILURE;
+            }
+        }
+        eglMakeCurrent(display, surface, surface, context);
+
     }
-
-    // I am not exactly sure why the EGL config must match the GBM format.
-    // But it works!
-    int configIndex = matchConfigToVisual(display, GBM_FORMAT_XRGB8888, configs, numConfigs);
-    if (configIndex < 0)
-    {
-        fprintf(stderr, "Failed to find matching EGL config! Error: %s\n",
-                eglGetErrorStr());
-        eglTerminate(display);
-        gbm_surface_destroy(gbmSurface);
-        gbm_device_destroy(gbmDevice);
-        return EXIT_FAILURE;
-    }
-
-    EGLContext context =
-        eglCreateContext(display, configs[configIndex], EGL_NO_CONTEXT, contextAttribs);
-    if (context == EGL_NO_CONTEXT)
-    {
-        fprintf(stderr, "Failed to create EGL context! Error: %s\n",
-                eglGetErrorStr());
-        eglTerminate(display);
-        gbmClean();
-        return EXIT_FAILURE;
-    }
-
-    EGLSurface surface =
-        eglCreateWindowSurface(display, configs[configIndex], gbmSurface, NULL);
-    if (surface == EGL_NO_SURFACE)
-    {
-        fprintf(stderr, "Failed to create EGL surface! Error: %s\n",
-                eglGetErrorStr());
-        eglDestroyContext(display, context);
-        eglTerminate(display);
-        gbmClean();
-        return EXIT_FAILURE;
-    }
-
-    free(configs);
-    eglMakeCurrent(display, surface, surface, context);
-
     // Set GL Viewport size, always needed!
-    glViewport(0, 0, desiredWidth, desiredHeight);
+    glViewport(0, 0, mode.hdisplay, mode.vdisplay);
 
     // Get GL Viewport size and test if it is correct.
-    GLint viewport[4];
+    static GLint viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
 
     // viewport[2] and viewport[3] are viewport width and height respectively
     printf("GL Viewport size: %dx%d\n", viewport[2], viewport[3]);
 
-    if (viewport[2] != desiredWidth || viewport[3] != desiredHeight)
-    {
+    if (viewport[2] != mode.hdisplay || viewport[3] != mode.vdisplay) {
         fprintf(stderr, "Error! The glViewport returned incorrect values! Something is wrong!\n");
         eglDestroyContext(display, context);
         eglDestroySurface(display, surface);
         eglTerminate(display);
         gbmClean();
+        assert(false);
         return EXIT_FAILURE;
     }
 
-    // Clear whole screen (front buffer)
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    // pucgenie: Let's try some experiments ;)
+    if (false) {
+        // Clear whole screen (front buffer)
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
 
+    static GLuint program, vert, frag;
     // Create a shader program
     // NO ERRRO CHECKING IS DONE! (for the purpose of this example)
     // Read an OpenGL tutorial to properly implement shader creation
     program = glCreateProgram();
     glUseProgram(program);
+    
     vert = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vert, 1, &vertexShaderCode, NULL);
     glCompileShader(vert);
+    
     frag = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(frag, 1, &fragmentShaderCode, NULL);
+    // pucgenie: TODO: statically precompile shader
     glCompileShader(frag);
+    
     glAttachShader(program, frag);
     glAttachShader(program, vert);
     glLinkProgram(program);
     glUseProgram(program);
 
+    GLuint vbo;
     // Create Vertex Buffer Object
     // Again, NO ERRRO CHECKING IS DONE! (for the purpose of this example)
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    // pucgenie: Why sizeof(float) instead of sizeof(GLfloat) (or just "sizeof(vertices)" without multiplication) ?
     glBufferData(GL_ARRAY_BUFFER, 9 * sizeof(float), vertices, GL_STATIC_DRAW);
 
     // Get vertex attribute and uniform locations
