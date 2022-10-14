@@ -32,9 +32,9 @@ static const char *eglGetErrorStr(); // moved to bottom
 static uint32_t previousFb;
 static struct gbm_bo *previousBo = NULL;
 
-static void gbmSwapBuffers(fdI_t device, const EGLDisplay display, const EGLSurface surface, drmModeModeInfo * const mode, uint32_t *connectorId, const drmModeCrtc * const crtc) {
+static void gbmSwapBuffers(const fdI_t device, const EGLDisplay display, const EGLSurface surface, drmModeModeInfo * const mode, uint32_t * const connectorId, const drmModeCrtc * const crtc) {
     eglSwapBuffers(display, surface);
-    struct gbm_bo *bo = gbm_surface_lock_front_buffer(gbmSurface);
+    struct gbm_bo * const bo = gbm_surface_lock_front_buffer(gbmSurface);
     uint32_t handle = gbm_bo_get_handle(bo).u32;
     uint32_t pitch = gbm_bo_get_stride(bo);
     uint32_t fb;
@@ -43,13 +43,14 @@ static void gbmSwapBuffers(fdI_t device, const EGLDisplay display, const EGLSurf
 
     if (previousBo) {
         drmModeRmFB(device, previousFb);
+        // pucgenie: TODO: Reuse buffer? We can assume that the size doesn't change.
         gbm_surface_release_buffer(gbmSurface, previousBo);
     }
     previousBo = bo;
     previousFb = fb;
 }
 
-static void gbmClean(fdI_t device, drmModeCrtc *crtc, uint32_t *connectorId) {
+static void gbmClean(const fdI_t device, drmModeCrtc * const crtc, uint32_t * const connectorId) {
     // set the previous crtc
     drmModeSetCrtc(device, crtc->crtc_id, crtc->buffer_id, crtc->x, crtc->y, connectorId, 1, &crtc->mode);
     drmModeFreeCrtc(crtc);
