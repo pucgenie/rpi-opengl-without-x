@@ -106,16 +106,19 @@ int main() {
         drmModeRes *resources;
         if ((resources = drmModeGetResources(device)) == NULL) {
             // if we have the right device we can get it's resources
-            printf(TRY_CARDS[0] " does not have DRM resources, using " TRY_CARDS[1] ", ");
+            fputs(TRY_CARDS[0], stderr);
+            fputs(" does not have DRM resources, using ", stderr);
+            fputs(TRY_CARDS[1], stderr);
+            fputs(", ", stderr);
             device = open(TRY_CARDS[1], O_RDWR | O_CLOEXEC); // if not, try the other one: (1)
             resources = drmModeGetResources(device);
         } else {
-          printf("using /dev/dri/card1, ");
+          fputs("using /dev/dri/card1, ", stderr);
         }
 
         if (resources == NULL) {
             // pucgenie: Why card1 hardcoded in text?
-            printf("Unable to get DRM resources on card1\n");
+            fputs("Unable to get DRM resources on card1\n", stderr);
 return -1;
         }
 
@@ -130,7 +133,7 @@ return -1;
                 }
             }
             if (i < 0 || i >= resources->count_connectors) {
-                fprintf(stderr, "Unable to get connector\n");
+                fputs("Unable to get connector\n", stderr);
                 drmModeFreeResources(resources);
 return -1;
             }
@@ -138,11 +141,11 @@ return -1;
         connectorId = connector->connector_id;
         // copy: array of resolutions and refresh rates supported by this display
         mode = connector->modes[0];
-        printf("resolution: %ix%i\n", mode.hdisplay, mode.vdisplay);
+        fprintf(stderr, "resolution: %ix%i\n", mode.hdisplay, mode.vdisplay);
 
         drmModeEncoder *encoder;
         if (!connector->encoder_id) {
-            fprintf(stderr, "Unable to get encoder\n");
+            fputs("Unable to get encoder\n", stderr);
             drmModeFreeConnector(connector);
             drmModeFreeResources(resources);
 return -1;
@@ -164,8 +167,10 @@ return -1;
         int major, minor;
 
         if (eglInitialize(display, &major, &minor) == EGL_FALSE) {
-            fprintf(stderr, "Failed to get EGL version! Error: %s\n",
-                    eglGetErrorStr());
+            fputs("Failed to get EGL version! Error: ", stderr);
+            fputs(eglGetErrorStr(), stderr);
+            fputs("\n", stderr);
+            
             eglTerminate(display);
             gbmClean(device, crtc, &connectorId);
 return EXIT_FAILURE;
@@ -174,7 +179,7 @@ return EXIT_FAILURE;
         // Make sure that we can use OpenGL in this EGL app.
         eglBindAPI(EGL_OPENGL_API);
 
-        printf("Initialized EGL version: %d.%d\n", major, minor);
+        fprintf(stderr, "Initialized EGL version: %d.%d\n", major, minor);
     }
 
     GLint posLoc, colorLoc;
@@ -260,7 +265,7 @@ return EXIT_FAILURE;
         glGetIntegerv(GL_VIEWPORT, viewport);
 
         // viewport[2] and viewport[3] are viewport width and height respectively
-        printf("GL Viewport size: %dx%d\n", viewport[2], viewport[3]);
+        fprintf(stderr, "GL Viewport size: %dx%d\n", viewport[2], viewport[3]);
 
         if (viewport[2] != mode.hdisplay || viewport[3] != mode.vdisplay) {
             fprintf(stderr, "Error! The glViewport returned incorrect values! Something is wrong!\n");
@@ -329,11 +334,13 @@ return EXIT_FAILURE;
     // in order to display what you drew you need to swap the back and front buffers.
     gbmSwapBuffers(device, display, surface, &mode, &connectorId, crtc);
 
+    // no need to drawagain
+    eglDestroyContext(display, context);
+    eglDestroySurface(display, surface);
+
     sleep(5); // pause for a moment so that you can see it worked before returning to command line
 
     // Cleanup
-    eglDestroyContext(display, context);
-    eglDestroySurface(display, surface);
     eglTerminate(display);
     gbmClean(device, crtc, &connectorId);
 
