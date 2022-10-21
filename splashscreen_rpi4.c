@@ -74,30 +74,39 @@ static const GLfloat vertices[] = {
 
 // The following are GLSL shaders for rendering a triangle on the screen
 #define STRINGIFY(x) #x
-static const char *vertexShaderCode = STRINGIFY(
-    attribute vec3 pos; void main() { gl_Position = vec4(pos, 1.0); });
+static const char *vertexShaderCode =
+    STRINGIFY(attribute vec3 pos; void main() { gl_Position = vec4(pos, 1.0); });
 
 static const char *fragmentShaderCode =
     STRINGIFY(uniform vec4 color; void main() { gl_FragColor = vec4(color); });
 
+// linked precompiled shader
+extern char _binary_vertexShader1_start[];
+extern char _binary_vertexShader1_end[];
+
+extern char _binary_fragmentShader1_start[];
+extern char _binary_fragmentShader1_end[];
+
 int main() {
-    const char* TRY_CARDS[] = {
-        "/dev/dri/card1",
-        "/dev/dri/card0",
-    };
 
     static fdI_t device;
     static drmModeCrtc *crtc;
     static uint32_t connectorId;
     static drmModeModeInfo mode;
 
-    // we have to try card0 and card1 to see which is valid. fopen will work on both, so...
-    device = open(TRY_CARDS[0], O_RDWR | O_CLOEXEC);
     {
+        const char* TRY_CARDS[] = {
+            "/dev/dri/card1",
+            "/dev/dri/card0",
+        };
+
+        // we have to try card0 and card1 to see which is valid. fopen will work on both, so...
+        device = open(TRY_CARDS[0], O_RDWR | O_CLOEXEC);
+
         drmModeRes *resources;
         if ((resources = drmModeGetResources(device)) == NULL) {
             // if we have the right device we can get it's resources
-            printf("/dev/dri/card1 does not have DRM resources, using card0, ");
+            printf(TRY_CARDS[0] " does not have DRM resources, using " TRY_CARDS[1] ", ");
             device = open(TRY_CARDS[1], O_RDWR | O_CLOEXEC); // if not, try the other one: (1)
             resources = drmModeGetResources(device);
         } else {
