@@ -17,7 +17,7 @@
 #include <errno.h>
 
 // inline whole functionality
-#include "yafmtc.c"
+#include "yafmtc.h"
 int writeToStderr(const char * const str_sans_zero, const size_t len) {
 	return fwrite(str_sans_zero, len, 1, stderr);
 }

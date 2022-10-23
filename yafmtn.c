@@ -17,7 +17,7 @@ struct nstring {
 /**
  *
 **/
-static int fnfmt(const struct nstring fmtStr, int (*charArrayConsumer2)(const struct nstring *), const struct nstring args[]) {
+int fnfmt(const struct nstring fmtStr, int (*charArrayConsumer2)(const struct nstring *), const struct nstring args[]) {
     for (int i = 0, j = 0; ; ++i) {
         switch (fmtStr[i]) {
             default:
