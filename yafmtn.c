@@ -2,13 +2,22 @@
  * To copy or to point to ("reference")...
 **/
 struct nstring {
-    const char * str,
-    const size_t len,
+    size_t len,
+    /**
+     * If the string is fragmented, link to the next fragment.
+     * remember to initialize!
+    **/
+    struct nstring *link,
+
+    /**
+     * flexible array member
+    **/
+    char str[/*0*/],
 }
 /**
  *
 **/
-static int fnfmt(const struct nstring fmtStr, int (*charArrayConsumer)(const char * const, const size_t), const struct nstring args[]) {
+static int fnfmt(const struct nstring fmtStr, int (*charArrayConsumer2)(const struct nstring *), const struct nstring args[]) {
     for (int i = 0, j = 0; ; ++i) {
         switch (fmtStr[i]) {
             default:
@@ -21,13 +30,13 @@ static int fnfmt(const struct nstring fmtStr, int (*charArrayConsumer)(const cha
                 if (nextchar == '$') {
                     // To branch or to ternary - I think readability is better this way.
                     // We need a condition for printing something from args anyway.
-                    // Would have needed a fputc - or charArrayConsumer({'$'}, 1) - if escaping didn't work in a postfix-mode.
-                    int ret = charArrayConsumer(fmtStr + j, i);
+                    // Would have needed a fputc - or charArrayConsumer2({1, NULL, {'$'}}) - if escaping didn't work in a postfix-mode.
+                    int ret = charArrayConsumer2(fmtStr + j, i - j);
                     if (ret == -1) {
 return ret;
                     }
                 } else {
-                    int ret = charArrayConsumer(fmtStr + j, i-1);
+                    int ret = charArrayConsumer2(fmtStr + j, i - j - 1);
                     if (ret == -1) {
 return ret;
                     }
@@ -36,7 +45,7 @@ return ret;
                     assert(posidx >= 0 && posidx < 10);
 
                     const char * const posbuf = args[posidx];
-                    ret = charArrayConsumer(posbuf, strlen(posbuf));
+                    ret = charArrayConsumer2(posbuf, strlen(posbuf));
                     if (ret == -1) {
 return ret;
                     }
@@ -45,17 +54,21 @@ return ret;
                 j = i;
             }
     continue;
-            case '\0':
-                // Is there something left in the buffer?
-                if (i > 1) {
-                    // pucgenie: I don't get it why there mustn't be expressed i-1
-                    int ret = charArrayConsumer(fmtStr + j, i);
-                    if (ret == -1) {
+        }
+        if (i == fmtStr.len) {
+            //case '\0':
+            // Is there something left in the buffer?
+            if (i > j + 1) {
+                // pucgenie: I don't get it why there mustn't be expressed i-1
+                int ret = charArrayConsumer2(fmtStr + j, i - j - 1);
+                if (ret == -1) {
 return ret;
-                    }
                 }
+            }
 return 0;
         }
     }
+    // endless loop
+    //return -1;
 
 }
