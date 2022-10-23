@@ -9,9 +9,19 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
+
+// fwrite
 #include <stdio.h>
 
 #include <assert.h>
+#include <errno.h>
+
+// inline whole functionality
+#include "yafmtc.c"
+int writeToStderr(const char * const str_sans_zero, const size_t len) {
+    return fwrite(str_sans_zero, len, 1, stderr);
+}
+#define fmtErrln(fmtStr, ...) ffmt(#fmtStr "\n", writeToStderr, (const char * const []) { __VA_ARGS__ })
 
 // The following code related to DRM/GBM was adapted from the following sources:
 // https://github.com/eyelash/tutorials/blob/master/drm-gbm.c
@@ -26,66 +36,60 @@ typedef int fdI_t;
 
 static struct gbm_device *gbmDevice;
 static struct gbm_surface *gbmSurface;
+static struct gbm_bo * bo = NULL;
+static uint32_t fb;
 
 static const char *eglGetErrorStr(); // moved to bottom
 
-static uint32_t previousFb;
-static struct gbm_bo *previousBo = NULL;
 
-static void gbmSwapBuffers(const fdI_t device, const EGLDisplay display, const EGLSurface surface, drmModeModeInfo * const mode, uint32_t * const connectorId, const drmModeCrtc * const crtc) {
+static void gbmSwapBuffers(
+      const fdI_t device
+    , const EGLDisplay display
+    , const EGLSurface surface
+    , drmModeModeInfo * const mode
+    , uint32_t * const connectorId
+    , const drmModeCrtc * const crtc
+    ) {
     eglSwapBuffers(display, surface);
-    struct gbm_bo * const bo = gbm_surface_lock_front_buffer(gbmSurface);
+    if (bo != NULL) {
+        drmModeRmFB(device, fb);
+        // pucgenie: TODO: Reuse buffer? We can assume that the size doesn't change.
+        gbm_surface_release_buffer(gbmSurface, bo);
+    }
+    bo = gbm_surface_lock_front_buffer(gbmSurface);
     uint32_t handle = gbm_bo_get_handle(bo).u32;
     uint32_t pitch = gbm_bo_get_stride(bo);
-    uint32_t fb;
     drmModeAddFB(device, mode->hdisplay, mode->vdisplay, 24, 32, pitch, handle, &fb);
     drmModeSetCrtc(device, crtc->crtc_id, fb, 0, 0, connectorId, 1, mode);
-
-    if (previousBo) {
-        drmModeRmFB(device, previousFb);
-        // pucgenie: TODO: Reuse buffer? We can assume that the size doesn't change.
-        gbm_surface_release_buffer(gbmSurface, previousBo);
-    }
-    previousBo = bo;
-    previousFb = fb;
 }
 
-static void gbmClean(const fdI_t device, drmModeCrtc * const crtc, uint32_t * const connectorId) {
+static void gbmClean(
+      const fdI_t device
+    , drmModeCrtc * const crtc
+    , uint32_t * const connectorId
+    ) {
     // set the previous crtc
     drmModeSetCrtc(device, crtc->crtc_id, crtc->buffer_id, crtc->x, crtc->y, connectorId, 1, &crtc->mode);
     drmModeFreeCrtc(crtc);
 
-    if (previousBo) {
-        drmModeRmFB(device, previousFb);
-        gbm_surface_release_buffer(gbmSurface, previousBo);
+    if (bo != NULL) {
+        drmModeRmFB(device, fb);
+        gbm_surface_release_buffer(gbmSurface, bo);
     }
 
     gbm_surface_destroy(gbmSurface);
     gbm_device_destroy(gbmDevice);
 }
 
-// The following array holds vec3 data of
-// three vertex positions
-static const GLfloat vertices[] = {
-    -1.0f, -1.0f, +0.0f,
-    +1.0f, -1.0f, +0.0f,
-    +0.0f, +1.0f, +0.0f,
-};
-
 // The following are GLSL shaders for rendering a triangle on the screen
 #define STRINGIFY(x) #x
-static const char *vertexShaderCode =
-    STRINGIFY(attribute vec3 pos; void main() { gl_Position = vec4(pos, 1.0); });
-
-static const char *fragmentShaderCode =
-    STRINGIFY(uniform vec4 color; void main() { gl_FragColor = vec4(color); });
 
 // linked precompiled shader
-extern char _binary_vertexShader1_start[];
-extern char _binary_vertexShader1_end[];
+//extern char *_binary_vertexShader1_start;
+//extern char *_binary_vertexShader1_end;
 
-extern char _binary_fragmentShader1_start[];
-extern char _binary_fragmentShader1_end[];
+//extern char *_binary_fragmentShader1_start;
+//extern char *_binary_fragmentShader1_end;
 
 int main() {
 
@@ -95,47 +99,67 @@ int main() {
     static drmModeModeInfo mode;
 
     {
-        const char* TRY_CARDS[] = {
+        const char * const TRY_CARDS[] = {
             "/dev/dri/card1",
             "/dev/dri/card0",
+            NULL,
         };
 
+        const char * const * currentCard = TRY_CARDS;
+        //stat(currentCard, statBuf);
         // we have to try card0 and card1 to see which is valid. fopen will work on both, so...
-        device = open(TRY_CARDS[0], O_RDWR | O_CLOEXEC);
+        device = open(*currentCard, O_RDWR | O_CLOEXEC);
+        if (device == -1) {
+            fprintf(stderr, STRINGIFY({"open_errno": %d})"\n", errno);
+return EXIT_FAILURE;
+        }
 
         drmModeRes *resources;
-        if ((resources = drmModeGetResources(device)) == NULL) {
+        while ((resources = drmModeGetResources(device)) == NULL) {
             // if we have the right device we can get it's resources
-            fputs(TRY_CARDS[0], stderr);
-            fputs(" does not have DRM resources, using ", stderr);
-            fputs(TRY_CARDS[1], stderr);
-            fputs(", ", stderr);
-            device = open(TRY_CARDS[1], O_RDWR | O_CLOEXEC); // if not, try the other one: (1)
+            
+            fmtErrln({"no_drm_resources": "$0"}, *currentCard);
+
+            //fputs(STRINGIFY({"no_drm_resources": ), stderr);
+            //fputs(*currentCard, stderr);
+            //fputs("}\n", stderr);
+            currentCard++;
+            if (*currentCard == NULL) {
+                // handle error after loop
+                break;
+            }
+            device = open(*currentCard, O_RDWR | O_CLOEXEC); // if not, try the other one: (1)
             resources = drmModeGetResources(device);
-        } else {
-          fputs("using /dev/dri/card1, ", stderr);
         }
-
+        
         if (resources == NULL) {
-            // pucgenie: Why card1 hardcoded in text?
-            fputs("Unable to get DRM resources on card1\n", stderr);
-return -1;
+            fmtErrln({"no_drm_resources": "$0"}, *currentCard);
+return EXIT_FAILURE;
         }
+        
+        fmtErrln({"currentCard": "$0"}, *currentCard);
 
-        drmModeConnector *connector;
+        drmModeConnector *connector = NULL;
         assert(resources->count_connectors > 0);
         {
             int i = resources->count_connectors;
-            for (; i --> 0; drmModeFreeConnector(connector)) {
-                connector = drmModeGetConnector(device, resources->connectors[i]);
-                if (connector->connection == DRM_MODE_CONNECTED) {
-                    break;
+            while (i --> 0) {
+                drmModeConnector *connector_tmp = drmModeGetConnector(device, resources->connectors[i]);
+                if (connector_tmp->connection == DRM_MODE_CONNECTED) {
+                    connector = connector_tmp;
+                    // Don't break, print other connectors too
+                    if (false) {
+                        break;
+                    }
+                } else {
+                    fprintf(stderr, "Connector %i connection state: %d\n", i, connector_tmp->connection);
+                    drmModeFreeConnector(connector_tmp);
                 }
             }
-            if (i < 0 || i >= resources->count_connectors) {
+            if (connector == NULL && (i < 0 || i >= resources->count_connectors)) {
                 fputs("Unable to get connector\n", stderr);
                 drmModeFreeResources(resources);
-return -1;
+return EXIT_FAILURE;
             }
         }
         connectorId = connector->connector_id;
@@ -148,7 +172,7 @@ return -1;
             fputs("Unable to get encoder\n", stderr);
             drmModeFreeConnector(connector);
             drmModeFreeResources(resources);
-return -1;
+return EXIT_FAILURE;
         }
         encoder = drmModeGetEncoder(device, connector->encoder_id);
         assert(encoder);
@@ -278,31 +302,34 @@ return EXIT_FAILURE;
         }
     }
 
-    // pucgenie: Let's try some experiments ;)
+    // pucgenie: Let's experiment ;)
     if (false) {
         // Clear whole screen (front buffer)
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     }
 
-    static GLuint program, vert, frag;
     // Create a shader program
     // NO ERRRO CHECKING IS DONE! (for the purpose of this example)
     // Read an OpenGL tutorial to properly implement shader creation
-    program = glCreateProgram();
+    GLuint program = glCreateProgram();
     glUseProgram(program);
     
-    vert = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vert, 1, &vertexShaderCode, NULL);
-    glCompileShader(vert);
-    
-    frag = glCreateShader(GL_FRAGMENT_SHADER);
+    const char *fragmentShaderCode =
+        STRINGIFY(uniform vec4 color; void main() { gl_FragColor = vec4(color); });
+    GLuint frag = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(frag, 1, &fragmentShaderCode, NULL);
     // pucgenie: TODO: statically precompile shader
     glCompileShader(frag);
-
     glAttachShader(program, frag);
+
+    const char *vertexShaderCode =
+        STRINGIFY(attribute vec3 pos; void main() { gl_Position = vec4(pos, 1.0); });
+    GLuint vert = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vert, 1, &vertexShaderCode, NULL);
+    glCompileShader(vert);
     glAttachShader(program, vert);
+    
     glLinkProgram(program);
     glUseProgram(program);
 
@@ -312,6 +339,13 @@ return EXIT_FAILURE;
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
 
+    // The following array holds vec3 data of
+    // three vertex positions
+    const GLfloat vertices[] = {
+        -1.0f, -1.0f, +0.0f,
+        +1.0f, -1.0f, +0.0f,
+        +0.0f, +1.0f, +0.0f,
+    };
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices) * sizeof(GLfloat), vertices, GL_STATIC_DRAW);
 
     // Get vertex attribute and uniform locations
@@ -334,16 +368,18 @@ return EXIT_FAILURE;
     // in order to display what you drew you need to swap the back and front buffers.
     gbmSwapBuffers(device, display, surface, &mode, &connectorId, crtc);
 
-    // no need to drawagain
+    // TODO: draw more, animate, etc.
+
+    // no need to draw again - Cleanup
     eglDestroyContext(display, context);
     eglDestroySurface(display, surface);
+    eglTerminate(display);
+    
 
     sleep(5); // pause for a moment so that you can see it worked before returning to command line
 
-    // Cleanup
-    eglTerminate(display);
+    // really clears the screen
     gbmClean(device, crtc, &connectorId);
-
     close(device);
 return EXIT_SUCCESS;
 }
