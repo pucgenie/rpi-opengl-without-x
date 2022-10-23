@@ -28,7 +28,7 @@ return ret;
                     if (ret == -1) {
 return ret;
                     }
-                    // Feel free to implement the remaining parts of the spec
+                    // pucgenie: Feel free to implement the remaining parts of the spec
                     size_t posidx = nextchar - '0';
                     assert(posidx >= 0 && posidx < 10);
 
@@ -55,5 +55,7 @@ return ret;
 return 0;
         }
     }
+    // endless loop
+    //return -1;
 
 }
