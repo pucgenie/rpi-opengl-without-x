@@ -10,6 +10,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+// strerror
+#include <string.h>
 // fwrite
 #include <stdio.h>
 
@@ -35,8 +37,11 @@ int writeToStderr(const char * const str_sans_zero, const size_t len) {
 //#define fmtErrln(fmtStr, ...) ffmt(#fmtStr "\n", writeToStderr, (const char * const []) { __VA_ARGS__ })
 #define fmtErr(fmtStr, ...) ffmt(fmtStr, writeToStderr, (const char * const []) { __VA_ARGS__ })
 
-//#define SPLASHSCREEN_TRACE(x) x
-#define SPLASHSCREEN_TRACE(x)
+#define SPLASHSCREEN_TRACE(x) x
+//#define SPLASHSCREEN_TRACE(x)
+
+#define SPLASHSCREEN_INFO(x) x
+//#define SPLASHSCREEN_INFO(x)
 
 // The following code related to DRM/GBM was adapted from the following sources:
 // https://github.com/eyelash/tutorials/blob/master/drm-gbm.c
@@ -60,7 +65,7 @@ static uint32_t fb;
 static const char *const eglGetErrorStr(); // moved to bottom
 
 
-static void gbmSwapBuffers(
+static int gbmSwapBuffers(
 	  const fdI_t device
 	, EGLDisplay const display
 	, EGLSurface const surface
@@ -69,10 +74,15 @@ static void gbmSwapBuffers(
 	, drmModeCrtcPtr const crtc
 	) {
 	SPLASHSCREEN_TRACE(fputs("Before egl swap buffers\n", stderr));
-	eglSwapBuffers(display, surface);
+	int ret = eglSwapBuffers(display, surface);
+	if (!ret) {
+		// check egl error outside.
+		return 0;
+	}
 	if (bo != NULL) {
-		fputs("bo != NULL\n", stderr);
-		drmModeRmFB(device, fb);
+		SPLASHSCREEN_INFO(fputs("bo != NULL\n", stderr));
+		ret = drmModeRmFB(device, fb);
+		assert(ret);
 		// pucgenie: TODO: Reuse buffer? We can assume that the size doesn't change.
 		gbm_surface_release_buffer(gbmSurface, bo);
 	}
@@ -83,43 +93,60 @@ static void gbmSwapBuffers(
 	
 	SPLASHSCREEN_TRACE(fputs("Before drm add FB\n", stderr));
 	// pucgenie: Are you sure that the FB has to be initialized before setting Crtc?
-	drmModeAddFB(device, mode->hdisplay, mode->vdisplay, 24, 32, pitch, handle, &fb);
+	ret = drmModeAddFB(device, mode->hdisplay, mode->vdisplay, 24, 32, pitch, handle, &fb);
+	if (!ret) {
+		fprintf(stderr, "drmModeAddFB failed unexpectedly (%d). Don't know how to get the exact errno (%d, %s).\n", ret, errno, strerror(errno));
+return 0;
+	}
 
 	if (fb == 0 || fb == -1) {
 		fputs("No FB created??\n", stderr);
 	}
 	
 	SPLASHSCREEN_TRACE(fputs("Before drm set crtc\n", stderr));
-	drmModeSetCrtc(device, crtc->crtc_id, fb, 0, 0, connectorId, 1, mode);
+	ret = drmModeSetCrtc(device, crtc->crtc_id, fb, 0, 0, connectorId, 1, mode);
+	if (!ret) {
+		fprintf(stderr, "drmModeSetCrtc failed unexpectedly (%d). Don't know how to get the exact errno (%d, %s).\n", ret, errno, strerror(errno));
+return 0;
+	}
+	return 1;
 }
 
-static void gbmClean(
+static int gbmClean(
 	  const fdI_t device
 	, struct _drmModeCrtc *const crtc
 	, connectorI_t * const connectorId
 	) {
 	// set the previous crtc
-	drmModeSetCrtc(device, crtc->crtc_id, crtc->buffer_id, crtc->x, crtc->y, connectorId, 1, &crtc->mode);
+	int ret = drmModeSetCrtc(device, crtc->crtc_id, crtc->buffer_id, crtc->x, crtc->y, connectorId, 1, &crtc->mode);
+	if (!ret) {
+		return 0;
+	}
 	drmModeFreeCrtc(crtc);
-
 	if (bo != NULL) {
-		drmModeRmFB(device, fb);
+		ret = drmModeRmFB(device, fb);
+		if (!ret) {
+			return 0;
+		}
 		gbm_surface_release_buffer(gbmSurface, bo);
 	}
 
 	gbm_surface_destroy(gbmSurface);
 	gbm_device_destroy(gbmDevice);
+	return 0;
 }
 
 // The following are GLSL shaders for rendering a triangle on the screen
 #define STRINGIFY(x) #x
 
 // linked precompiled shader
-extern const char *const _binary_vertexShader1_start;
-extern const char *const _binary_vertexShader1_end;
+extern const char _binary_vertexShader1_glsl_start[];
+extern const char _binary_vertexShader1_glsl_end[];
+//extern const uint16_t _binary_vertexShader1_glsl_size[];
 
-extern const char *const _binary_fragmentShader1_start;
-extern const char *const _binary_fragmentShader1_end;
+extern const char _binary_fragmentShader1_glsl_start[];
+extern const char _binary_fragmentShader1_glsl_end[];
+//extern const uint16_t _binary_fragmentShader1_glsl_size[];
 
 int main(int argc, char* argv[]) {
 
@@ -129,6 +156,8 @@ int main(int argc, char* argv[]) {
 	static drmModeModeInfo mode;
 
 	{
+		// pucgenie: Because minor number depends on things we can't really reorder without much hassle,
+		// I deprecated this code and went on to use drmOpen.
 		//const char * const TRY_CARDS[] = {
 		//	"/dev/dri/card1",
 		//	"/dev/dri/card0",
@@ -137,23 +166,23 @@ int main(int argc, char* argv[]) {
 		//const char * const * currentCard = TRY_CARDS;
 
 		//fputs("unavailable: GL_ARB_gl_spirv GL_SHADER_BINARY_FORMAT_SPIR_V_ARB\n", stderr);
-		
 
 		//stat(currentCard, statBuf);
 		// we have to try card0 and card1 to see which is valid. fopen will work on both, so...
 		//device = open(*currentCard, O_RDWR | O_CLOEXEC);
 		// https://gist.github.com/robertkirkman/641ffd147157cc35eba7b404144228ce/revisions Linux_DRM_OpenGLES.c
 		// name = "vc4" "v3d"
-		if (argc == 1) {
-			argv[1] = "vc4";
+		const char *name = "vc4";
+		if (argc > 1) {
+			name = argv[1];
 		}
-		device = drmOpenWithType(argv[1], 0, DRM_NODE_PRIMARY);
+		device = drmOpenWithType(name, 0, DRM_NODE_PRIMARY);
 		if (device == -1) {
 			fprintf(stderr, "open_errno: %d\n", errno);
 return EXIT_FAILURE;
 		}
 
-		drmModeRes *resources = drmModeGetResources(device);
+		drmModeRes * const resources = drmModeGetResources(device);
 //		while (resources == NULL) {
 //			// if we have the right device we can get it's resources
 //			
@@ -174,9 +203,7 @@ return EXIT_FAILURE;
 			drmVersionPtr version;
 			version = drmGetVersion(device);
 			if (version != NULL) {
-				fputs("drm_version_name: ", stdout);
-				fputs(version->name, stdout);
-				fputc('\n', stdout);
+				fmtErr("drm_version_name: $0\n", version->name);
 				drmFreeVersion(version);
 			} else {
 				fputs("Couldn't determine drm version (name of driver).\n", stderr);
@@ -201,8 +228,8 @@ return EXIT_FAILURE;
 						break;
 					}
 				} else {
-					fprintf(stderr, "{alt_connector_id: %i, connection_state: %d, count_modes: %d}\n"
-						, i, connector_tmp->connection, connector_tmp->count_modes);
+					SPLASHSCREEN_INFO(fprintf(stderr, "{alt_connector_id: %i, connection_state: %d, count_modes: %d}\n"
+						, i, connector_tmp->connection, connector_tmp->count_modes));
 					drmModeFreeConnector(connector_tmp);
 				}
 			}
@@ -215,16 +242,16 @@ return EXIT_FAILURE;
 		connectorId = connector->connector_id;
 		// copy: array of resolutions and refresh rates supported by this display
 		mode = connector->modes[0];
-		fprintf(stderr, "resolution: %ix%i\n", mode.hdisplay, mode.vdisplay);
+		SPLASHSCREEN_INFO(fprintf(stderr, "resolution: %ix%i\n", mode.hdisplay, mode.vdisplay));
 
 		drmModeEncoder *encoder = NULL;
 		if (!connector->encoder_id) {
-			fputs("Connector didn't define an encoder_id, searching for myself...\n", stderr);
-			fprintf(stderr, "Count encoders: %d\n", connector->count_encoders);
+			SPLASHSCREEN_TRACE(fputs("Connector didn't define an encoder_id, searching for myself...\n", stderr));
+			SPLASHSCREEN_TRACE(fprintf(stderr, "Count encoders: %d\n", connector->count_encoders));
 			// https://gist.github.com/robertkirkman/641ffd147157cc35eba7b404144228ce :574
 			for (size_t j=0; j<connector->count_encoders; j++) {
 				encoder = drmModeGetEncoder(device, connector->encoders[j]);
-				switch (encoder->encoder_type) {
+				SPLASHSCREEN_INFO(switch (encoder->encoder_type) {
 					case DRM_MODE_ENCODER_VIRTUAL:
 						fputs("Encoder type DRM_MODE_ENCODER_VIRTUAL\n", stderr);
 					break;
@@ -234,10 +261,10 @@ return EXIT_FAILURE;
 					default:
 						fprintf(stderr, "Encoder type 0x%x\n", encoder->encoder_type);
 					break;
-				}
+				})
 				/* find the first valid CRTC if not assigned */
 				if (!encoder->crtc_id) {
-					fputs("Encoder didn't define a crtc_id, searching for myself...\n", stderr);
+					SPLASHSCREEN_INFO(fputs("Encoder didn't define a crtc_id, searching for myself...\n", stderr));
 					for (size_t k = 0; k < resources->count_crtcs; ++k) {
 						/* check whether this CRTC works with the encoder */
 						if (!(encoder->possible_crtcs & (1 << k)))
@@ -253,13 +280,13 @@ return EXIT_FAILURE;
 						encoder = NULL;
 						continue;
 					} else {
-						fputs("Possibly matching Crtc found at 2nd attempt!\n", stderr);
+						SPLASHSCREEN_TRACE(fputs("Possibly matching Crtc found at 2nd attempt!\n", stderr));
 					}
 				} else {
-					fputs("Possibly matching Crtc found at 1st attempt!\n", stderr);
+					SPLASHSCREEN_TRACE(fputs("Possibly matching Crtc found at 1st attempt!\n", stderr));
 				}
 				//connector->encoder_id = encoder->encoder_id;
-				fputs("Not freeing found alternative encoder.\n", stderr);
+				//fputs("Not freeing found alternative encoder.\n", stderr);
 				//drmModeFreeEncoder(encoder);
 			}
 		} else {
@@ -280,22 +307,35 @@ return EXIT_FAILURE;
 	gbmSurface = gbm_surface_create(gbmDevice, mode.hdisplay, mode.vdisplay, GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
 	static EGLDisplay display;
 	display = eglGetDisplay(gbmDevice);
-
+	int ret;
 	{
 		int major, minor;
 
 		if (eglInitialize(display, &major, &minor) == EGL_FALSE) {
 			fmtErr("eglInitialize_error: $0\n", eglGetErrorStr());
 			
-			eglTerminate(display);
-			gbmClean(device, crtc, &connectorId);
+			ret = eglTerminate(display);
+			if (!ret) {
+				fmtErr("eglTerminate failed while doing emergency termination: $0\n", eglGetErrorStr());
+				//return EXIT_FAILURE;
+			}
+			ret = gbmClean(device, crtc, &connectorId);
+			if (!ret) {
+				fmtErr("gbmClean failed while doing emergency termination. Error message may be misinterpreted: $0\n", eglGetErrorStr());
+				//return EXIT_FAILURE;
+			}
+
 return EXIT_FAILURE;
 		}
 
 		// Make sure that we can use OpenGL in this EGL app.
-		eglBindAPI(EGL_OPENGL_API);
+		ret = eglBindAPI(EGL_OPENGL_API);
+		if (!ret) {
+			fmtErr("eglBindApi failed: $0\n", eglGetErrorStr());
+return EXIT_FAILURE;
+		}
 
-		fprintf(stderr, "Initialized EGL version: %d.%d\n", major, minor);
+		SPLASHSCREEN_INFO(fprintf(stderr, "Initialized EGL version: %d.%d\n", major, minor));
 	}
 
 	GLint posLoc, colorLoc;
@@ -305,7 +345,11 @@ return EXIT_FAILURE;
 	{
 		// We will use the screen resolution as the desired width and height for the viewport.
 		EGLint count;
-		eglGetConfigs(display, NULL, 0, &count);
+		ret = eglGetConfigs(display, NULL, 0, &count);
+		if (!ret) {
+			fmtErr("eglGetConfigs_error: $0\n", eglGetErrorStr());
+return EXIT_FAILURE;
+		}
 		{
 			EGLConfig configs[count];
 			// The following code was adopted from
@@ -367,8 +411,11 @@ return EXIT_FAILURE;
 return EXIT_FAILURE;
 			}
 		}
-		eglMakeCurrent(display, surface, surface, context);
-
+		ret = eglMakeCurrent(display, surface, surface, context);
+		if (!ret) {
+			fmtErr("eglMakeCurrent_error: $0\n", eglGetErrorStr());
+return EXIT_FAILURE;
+		}
 	}
 	// Set GL Viewport size, always needed!
 	glViewport(0, 0, mode.hdisplay, mode.vdisplay);
@@ -378,7 +425,7 @@ return EXIT_FAILURE;
 		glGetIntegerv(GL_VIEWPORT, viewport);
 
 		// viewport[2] and viewport[3] are viewport width and height respectively
-		fprintf(stderr, "GL Viewport size: %dx%d\n", viewport[2], viewport[3]);
+		SPLASHSCREEN_INFO(fprintf(stderr, "GL Viewport size: %dx%d\n", viewport[2], viewport[3]));
 
 		if (viewport[2] != mode.hdisplay || viewport[3] != mode.vdisplay) {
 			fputs("Error! The glViewport returned incorrect values! Something is wrong!\n", stderr);
@@ -405,18 +452,26 @@ return EXIT_FAILURE;
 	GLuint program = glCreateProgram();
 	glUseProgram(program);
 	
-	const char *fragmentShaderCode =
-		STRINGIFY(uniform vec4 color; void main() { gl_FragColor = vec4(color); });
+	const char * const fragmentShaderCode =
+		_binary_fragmentShader1_glsl_start;
+
+	//fwrite(fragmentShaderCode, 16, 1, stderr);
+	//fwrite("\n", 1, 1, stderr);
+	//fprintf(stderr, "_binary_fragmentShader1_glsl_size %i\n", (uint16_t) _binary_fragmentShader1_glsl_size);
+	//fprintf(stderr, "_binary_vertexShader1_glsl_size %i\n", (uint16_t) _binary_vertexShader1_glsl_size);
+	//fprintf(stderr, "_binary_fragmentShader1_glsl_size calc. %i\n", _binary_fragmentShader1_glsl_end - _binary_fragmentShader1_glsl_start);
+	//fprintf(stderr, "_binary_vertexShader1_glsl_size calc. %i\n", _binary_vertexShader1_glsl_end - _binary_vertexShader1_glsl_start);
+
 	GLuint frag = glCreateShader(GL_FRAGMENT_SHADER);
-	glShaderSource(frag, 1, &fragmentShaderCode, NULL);
+	glShaderSource(frag, 1, &fragmentShaderCode, (const GLint[]){_binary_fragmentShader1_glsl_end - _binary_fragmentShader1_glsl_start});
 	// pucgenie: TODO: statically precompile shader
 	glCompileShader(frag);
 	glAttachShader(program, frag);
 
-	const char *vertexShaderCode =
-		STRINGIFY(attribute vec3 pos; void main() { gl_Position = vec4(pos, 1.0); });
+	const char * const vertexShaderCode =
+		_binary_vertexShader1_glsl_start;
 	GLuint vert = glCreateShader(GL_VERTEX_SHADER);
-	glShaderSource(vert, 1, &vertexShaderCode, NULL);
+	glShaderSource(vert, 1, &vertexShaderCode, (const GLint[]){_binary_vertexShader1_glsl_end - _binary_vertexShader1_glsl_start});
 	glCompileShader(vert);
 	glAttachShader(program, vert);
 	
@@ -460,8 +515,11 @@ return EXIT_FAILURE;
 
 	//SPLASHSCREEN_TRACE(fputs("Before swap buffers\n", stderr));
 	// in order to display what you drew you need to swap the back and front buffers.
-	gbmSwapBuffers(device, display, surface, &mode, &connectorId, crtc);
-
+	ret = gbmSwapBuffers(device, display, surface, &mode, &connectorId, crtc);
+	if (!ret) {
+		fmtErr("gbmSwapBuffers failed: $0\n\n", eglGetErrorStr());
+return EXIT_FAILURE;
+	}
 	// TODO: draw more, animate, etc.
 
 	SPLASHSCREEN_TRACE(fputs("Before destroy/cleanup\n", stderr));
@@ -474,7 +532,11 @@ return EXIT_FAILURE;
 	sleep(5); // pause for a moment so that you can see it worked before returning to command line
 
 	// really clears the screen
-	gbmClean(device, crtc, &connectorId);
+	ret = gbmClean(device, crtc, &connectorId);
+	if (!ret) {
+		fmtErr("gbmClean failed: $0\n", eglGetErrorStr());
+return EXIT_FAILURE;
+	}
 	close(device);
 return EXIT_SUCCESS;
 }

@@ -2,3 +2,4 @@
 /splashscreen_rpi4-debug
 /strace.log
 *.o
+*.glslo
